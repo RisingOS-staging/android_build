@@ -2262,6 +2262,8 @@ function fixup_common_out_dir() {
     fi
 }
 
+export SKIP_ABI_CHECKS=true
+
 setup_ccache
 validate_current_shell
 set_global_paths
