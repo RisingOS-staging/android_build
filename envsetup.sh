@@ -2140,6 +2140,19 @@ function riseup() {
     esac
 }
 
+ascend() {
+    if [[ -z "$TARGET_PRODUCT" ]]; then
+        echo "Error: No device target set. Please use 'riseup' or 'lunch' to set the target device."
+        return 1
+    fi
+    
+    if [[ "$1" == "fastboot" ]]; then
+        m updatepackage
+    else
+        m otapackage
+    fi
+}
+
 setup_ccache
 validate_current_shell
 set_global_paths
