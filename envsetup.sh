@@ -2116,16 +2116,20 @@ function avbtool() {
 }
 
 function setup_ccache() {
-    if [ -z "${CCACHE_EXEC}" ] && command -v ccache &>/dev/null; then
-        export USE_CCACHE=1
-        export CCACHE_EXEC=$(command -v ccache)
-        [ -z "${CCACHE_DIR}" ] && export CCACHE_DIR="$HOME/.ccache"
-        echo "ccache directory found, CCACHE_DIR set to: $CCACHE_DIR" >&2 
-        $CCACHE_EXEC -o compression=true -o direct_mode=true
-        $CCACHE_EXEC -M 20G -F 0 2>/dev/null && echo "ccache enabled, CCACHE_EXEC set to: $CCACHE_EXEC" >&2 ||
-            echo "Warning: Could not set cache size limit. Please check your configuration." >&2
-    elif [ -z "${CCACHE_EXEC}" ]; then
-        echo "Error: ccache not found. Please install ccache." >&2
+    if [ -z "${CCACHE_EXEC}" ]; then
+        if command -v ccache &>/dev/null; then
+            export USE_CCACHE=1
+            export CCACHE_EXEC=$(command -v ccache)
+            [ -z "${CCACHE_DIR}" ] && export CCACHE_DIR="$HOME/.ccache"
+            echo "ccache directory found, CCACHE_DIR set to: $CCACHE_DIR" >&2 
+            CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-40G}"
+            DIRECT_MODE="${DIRECT_MODE:-false}"
+            $CCACHE_EXEC -o compression=true -o direct_mode="${DIRECT_MODE}" -M "${CCACHE_MAXSIZE}" \
+                && echo "ccache enabled, CCACHE_EXEC set to: $CCACHE_EXEC, CCACHE_MAXSIZE set to: $CCACHE_MAXSIZE, direct_mode set to: $DIRECT_MODE" >&2 \
+                || echo "Warning: Could not set cache size limit. Please check ccache configuration." >&2
+        else
+            echo "Error: ccache not found. Please install ccache." >&2
+        fi
     fi
 }
 
