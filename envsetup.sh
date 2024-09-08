@@ -2214,10 +2214,11 @@ function ascend() {
 
 function rise() {
     if [[ "$1" == "help" ]]; then
-        echo "Usage: rise [b|fb|sb] [-j<num_cores>]"
-        echo "   b   - Build bacon"
-        echo "   fb  - Fastboot update"
-        echo "   sb  - Signed Build"
+        echo "Usage: rise [b|fb|sb|sbi] [-j<num_cores>]"
+        echo "   b    - Build bacon"
+        echo "   fb   - Fastboot update"
+        echo "   sb   - Signed Build"
+        echo "   sbi  - Signed Incremental Build (uses the non-signed previous target files)"
         echo "   -j<num_cores>  - Specify the number of cores to use for the build"
         return 0
     fi
@@ -2227,8 +2228,6 @@ function rise() {
         return 1
     fi
 
-    m installclean
-
     local jCount=""
     local cmd=""
 
@@ -2237,17 +2236,21 @@ function rise() {
             -j*)
                 jCount="$1"
                 ;;
-            b|fb|sb)
+            b|fb|sb|sbi)
                 cmd="$1"
                 ;;
             *)
-                echo "Error: Invalid argument mode. Please use 'b', 'fb', 'sb', 'help', or a job count flag like '-j<number>'."
-                echo "Usage: rise [b|fb|sb] [-j<num_cores>]"
+                echo "Error: Invalid argument mode. Please use 'b', 'fb', 'sb', 'sbi', 'help', or a job count flag like '-j<number>'."
+                echo "Usage: rise [b|fb|sb|sbi] [-j<num_cores>]"
                 return 1
                 ;;
         esac
         shift
     done
+
+    if [[ "$cmd" != "sbi" ]]; then
+        m installclean
+    fi
 
     case "$cmd" in
         sb)
@@ -2263,6 +2266,14 @@ function rise() {
             ;;
         fb)
             m updatepackage ${jCount:--j$(nproc --all)}
+            ;;
+        sbi)
+            if [[ ! -f "$ANDROID_KEY_PATH/releasekey.pk8" || ! -f "$ANDROID_KEY_PATH/releasekey.x509.pem" ]]; then
+                echo "Keys not found. Generating keys..."
+                gk -f
+            fi
+            echo "Reminder: Please ensure that you have generated keys using 'gk -f' before running 'rise sbi'."
+            sign_build_incremental ${jCount:--j$(nproc --all)}
             ;;
         "")
             m ${jCount:--j$(nproc --all)}
@@ -2512,7 +2523,52 @@ function sign_build() {
     echo "RisingOS JSON OTA created and copied."
 }
 
+function sign_build_incremental() {
+    local rising_build_version="$(get_build_var RISING_BUILD_VERSION)"
+    local rising_version="$(get_build_var RISING_VERSION)"
+    local rising_codename="$(get_build_var RISING_CODENAME)"
+    local rising_package_type="$(get_build_var RISING_PACKAGE_TYPE)"
+    local rising_release_type="$(get_build_var RISING_RELEASE_TYPE)"
+    local target_device="$(get_build_var TARGET_DEVICE)"
+    local jobCount="$1"
+    local key_path="$ANDROID_BUILD_TOP/vendor/lineage-priv/signing/keys"
+    local previous_target_files="$OUT/obj/PACKAGING/target_files_intermediates/lineage_$target_device-target_files.zip"
+    local renamed_previous_target_files="$OUT/obj/PACKAGING/target_files_intermediates/lineage_$target_device-previous-target_files.zip"
+    if [[ ! -f "$renamed_previous_target_files" ]]; then
+        if [[ -f "$previous_target_files" ]]; then
+            mv "$previous_target_files" "$renamed_previous_target_files"
+            echo "Renamed previous target files to $renamed_previous_target_files"
+        else
+            echo "Error: Previous target files not found at $previous_target_files, run a normal build first."
+            return 1
+        fi
+    else
+        echo "Previous target files already renamed: $renamed_previous_target_files"
+    fi
+    if ! m target-files-package otatools "$jobCount"; then
+        echo "Build failed, skipping signing of the package."
+        return 1
+    fi
+    sign_target_files
+    genSignedIncrementalOta
+    local source_file="$OUT/signed-incremental-ota_update.zip"
+    local target_file="$OUT/RisingOS-$rising_build_version-incremental-ota-signed.zip"
+    if [[ -e "$source_file" ]]; then
+        mv "$source_file" "$target_file"
+        echo "Renamed $source_file to $target_file"
+    else
+        echo "File $source_file does not exist."
+        return 1
+    fi
+    echo "Creating RisingOS JSON OTA entry for incremental OTA..."
+    $ANDROID_BUILD_TOP/vendor/rising/build/tools/createjson.sh "$target_device" "$OUT" "RisingOS-$rising_build_version-incremental-ota-signed.zip" "$rising_version" "$rising_codename" "$rising_package_type" "$rising_release_type"
+    local json_file="${rising_package_type}_${target_device}.json"
+    cp -f "$OUT/$json_file" "vendor/risingOTA/$json_file"
+    echo "RisingOS JSON OTA created and copied."
+}
+
 function sign_target_files() {
+    local target_device="$(get_build_var TARGET_DEVICE)"
     croot
     sign_target_files_apks -o -d $ANDROID_KEY_PATH \
         --extra_apks AdServicesApk.apk=$ANDROID_KEY_PATH/releasekey \
@@ -2633,7 +2689,7 @@ function sign_target_files() {
         --extra_apex_payload_key com.google.pixel.camera.hal.apex=$ANDROID_KEY_PATH/com.google.pixel.camera.hal.pem \
         --extra_apex_payload_key com.google.pixel.vibrator.hal.apex=$ANDROID_KEY_PATH/com.google.pixel.vibrator.hal.pem \
         --extra_apex_payload_key com.qorvo.uwb.apex=$ANDROID_KEY_PATH/com.qorvo.uwb.pem \
-        $OUT/obj/PACKAGING/target_files_intermediates/*-target_files*.zip \
+        $OUT/obj/PACKAGING/target_files_intermediates/lineage_$target_device-target_files.zip \
         $OUT/signed-target_files.zip
 }
 
@@ -2642,6 +2698,14 @@ function genSignedOta() {
         --block --backup=true \
         $OUT/signed-target_files.zip \
         $OUT/signed-ota_update.zip
+}
+
+function genSignedIncrementalOta() {
+    ota_from_target_files -k $ANDROID_KEY_PATH/releasekey \
+        --incremental_from "$renamed_previous_target_files" \
+        --block --backup=true \
+        $OUT/signed-target_files.zip \
+        $OUT/signed-incremental-ota_update.zip
 }
 
 function extractSI() {
